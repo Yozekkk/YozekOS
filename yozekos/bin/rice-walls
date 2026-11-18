@@ -514,11 +514,16 @@ def ensure_wallpaper():
     p = read(CURRENT).strip()
     if not os.path.isfile(p):
         p = ""
-        d = default_dir()
-        if d:
+        for d, _ in dirs():
             fs = [f for f in files_of(d) if not is_video(f)]
-            pref = [f for f in fs if os.path.basename(f) in ("space-black-hole.jpg", "night-peaks.jpg")]
+            pref = [f for f in fs if os.path.basename(f) in ("space-black-hole.jpg", "night-peaks.jpg", "wide.jpg")]
             p = (pref or sorted(fs) or [""])[0]
+            if p:
+                break
+        if not p:
+            bundled = os.path.join(os.path.dirname(__file__), "..", "sddm", "theme", "walls", "wide.jpg")
+            if os.path.isfile(bundled):
+                p = os.path.realpath(bundled)
     if p:
         apply_picture(p)
 

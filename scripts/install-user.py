@@ -70,6 +70,11 @@ def planned_entries() -> list[tuple[Path, dict, bytes | None]]:
     for name in ("rice-desktop", "rice-settings", "rice-lockscreen", "hyprquickpaper"):
         add(link_entry(config / "quickshell" / name, APP / "quickshell" / name))
     add(link_entry(HOME / ".local/share/yozekos/sounds", APP / "sounds"))
+    builtin_walls = HOME / "Pictures/YozekOS/Wallpapers/Built-in"
+    add(link_entry(builtin_walls, APP / "sddm/theme/walls"))
+    wallpaper_config = config / "yozekos/wallpapers.json"
+    if current(wallpaper_config) is None:
+        add(file_entry(wallpaper_config, (json.dumps({"folders": [str(builtin_walls)]}, indent=2) + "\n").encode()))
     for source in sorted((APP / "bin").iterdir()):
         if source.is_file() and os.access(source, os.X_OK):
             add(link_entry(HOME / ".local/bin" / source.name, source))
