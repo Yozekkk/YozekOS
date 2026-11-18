@@ -1,0 +1,143 @@
+{
+  "widgets": {
+    "weather": {
+      "enabled": false,
+      "x": 1183,
+      "y": 340,
+      "scale": 1.0
+    },
+    "media": {
+      "enabled": false
+    },
+    "resources": {
+      "enabled": false
+    },
+    "usercard": {
+      "enabled": false,
+      "x": 1196,
+      "y": 494,
+      "scale": 1.0
+    },
+    "calendar": {
+      "enabled": false
+    },
+    "visualizer": {
+      "enabled": false,
+      "x": 0,
+      "y": 593,
+      "w": 1536,
+      "h": 224,
+      "style": "bars",
+      "color": "accent",
+      "bars": "64",
+      "gain": "1.4",
+      "shape": "square",
+      "gap": "normal"
+    },
+    "battery": {
+      "enabled": false
+    },
+    "todo": {
+      "enabled": false
+    },
+    "focus": {
+      "enabled": false
+    },
+    "notes": {
+      "enabled": false
+    },
+    "gauge": {
+      "enabled": false
+    },
+    "date": {
+      "enabled": false
+    },
+    "sky": {
+      "enabled": false
+    },
+    "nowring": {
+      "enabled": false
+    },
+    "player": {
+      "enabled": false
+    },
+    "playpill": {
+      "enabled": false
+    },
+    "lyrics": {
+      "enabled": false
+    },
+    "storage": {
+      "enabled": false,
+      "x": 1206,
+      "y": 738,
+      "scale": 1.0
+    },
+    "trio": {
+      "enabled": false,
+      "x": 1206,
+      "y": 626,
+      "scale": 1.0,
+      "bg": 1.0
+    },
+    "forecast": {
+      "enabled": false
+    },
+    "music": {
+      "enabled": false
+    },
+    "datepill": {
+      "enabled": false
+    }
+  },
+  "clock": {
+    "enabled": true,
+    "onlyLocked": false,
+    "placement": "draggable",
+    "style": "pixel",
+    "font": "orbitron",
+    "x": 635,
+    "y": 347,
+    "scale": 0.985,
+    "opacity": 1.0
+  },
+  "dock": {
+    "enabled": false,
+    "position": "bottom",
+    "background": true,
+    "hover": true,
+    "pinnedStartup": false,
+    "media": true,
+    "nowText": true,
+    "pinButton": true,
+    "appsButton": true,
+    "tint": false,
+    "shade": true,
+    "appMenu": true,
+    "opacity": 0.78,
+    "blur": true,
+    "reserve": true,
+    "apps": [
+      "kitty",
+      "org.gnome.Nautilus",
+      "firefox",
+      "spotify",
+      "discord",
+      "steam"
+    ]
+  },
+  "lock": {
+    "toolbars": false,
+    "widgets": false,
+    "media": false
+  },
+  "gamebar": {
+    "opacity": 0.9,
+    "blur": true
+  },
+  "widgetBlur": true,
+  "widgetTheme": "outline",
+  "widgetAdapt": true,
+  "autoHide": true,
+  "editing": false
+}

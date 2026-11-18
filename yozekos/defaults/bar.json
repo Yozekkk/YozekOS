@@ -1,0 +1,63 @@
+{
+  "enabled": true,
+  "style": "flat",
+  "position": "bottom",
+  "height": 42,
+  "workspaces": 5,
+  "seconds": false,
+  "opacity": 0.95,
+  "ws_style": "dots",
+  "logo": "yozekos",
+  "autohide": false,
+  "shadow": true,
+  "island_dynamic": false,
+  "island_hover": false,
+  "island_volume": true,
+  "island_ws": true,
+  "island_notifs": true,
+  "tray_size": 18,
+  "island_date": false,
+  "island_weather": true,
+  "island_charge": true,
+  "island_tab": "today",
+  "island_close": 4,
+  "logo_color": "default",
+  "title_icon": "right",
+  "start_size": 24,
+  "start_padding": 5,
+  "start_image": "",
+  "task_mode": "separate",
+  "task_style": "square",
+  "task_icon_size": 20,
+  "task_all_workspaces": true,
+  "task_all_monitors": true,
+  "music_added": true,
+  "layout": {
+    "left": [
+      "launcher",
+      "workspaces",
+      "title"
+    ],
+    "center": [],
+    "right": [
+      "music",
+      "tray",
+      "volume",
+      "network",
+      "bluetooth",
+      "battery",
+      "notifications",
+      "power",
+      "clock"
+    ],
+    "available": [
+      "media",
+      "island",
+      "visualizer",
+      "weather",
+      "sysmon",
+      "date"
+    ]
+  },
+  "v": 1
+}

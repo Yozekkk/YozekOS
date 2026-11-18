@@ -1,0 +1,4 @@
+// AngelOS picture rig adapted for YozekOS; original MIT attribution in LICENSE.ANGELOS
+.pragma library
+
+var rig = {"size": [143, 120], "body": {"x": 32, "y": 0, "w": 79, "h": 120}, "parts": {"wing_left": {"x": 0, "y": 0, "w": 68, "h": 86, "frames": 5, "every": 1, "angles": [10, 5, 0, -5, -10], "pivot": [62.1, 62.0], "under": true}, "wing_right": {"x": 75, "y": 0, "w": 68, "h": 87, "frames": 5, "every": 1, "angles": [-10, -5, 0, 5, 10], "pivot": [4.9, 62.0], "under": true}}, "cheeks": {"k": 1, "at": [[25, 50], [51, 50]]}, "look": {"eyes": [[26, 40, 9, 7], [44, 40, 9, 7]]}};

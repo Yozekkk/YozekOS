@@ -1,0 +1,18 @@
+{
+  "enabled": true,
+  "style": "flat",
+  "position": "bottom",
+  "height": 42,
+  "opacity": 0.92,
+  "logo": "yozekos",
+  "start_size": 24,
+  "start_padding": 5,
+  "island_dynamic": false,
+  "island_hover": false,
+  "layout": {
+    "left": ["launcher", "workspaces", "title"],
+    "center": [],
+    "right": ["music", "tray", "volume", "network", "bluetooth", "battery", "island", "notifications", "power"]
+  },
+  "music_added": true
+}

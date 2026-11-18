@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -x /run/current-system/sw/bin/yozekos-capture-region ]]; then
+    exec /run/current-system/sw/bin/yozekos-capture-region "$@"
+fi
+repo="$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
+package="$(nix-build --no-out-link -E "let pkgs=import <nixpkgs> {}; in import $repo/nix/capture.nix { inherit pkgs; }" 2>/dev/null)"
+exec "$package/bin/yozekos-capture-region" "$@"

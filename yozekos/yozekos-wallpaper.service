@@ -1,0 +1,11 @@
+[Unit]
+Description=YozekOS wallpaper engine (Niri)
+PartOf=niri.service
+After=niri.service
+ConditionEnvironment=XDG_CURRENT_DESKTOP=niri
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@HOME@/.local/bin/rice-walls start
+ExecStop=@HOME@/.local/bin/rice-walls stop-session

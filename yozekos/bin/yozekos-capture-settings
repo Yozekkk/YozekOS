@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Validated settings for the YozekOS AngelOS-derived capture selector."""
+import json
+from pathlib import Path
+import os
+import subprocess
+import sys
+
+PATH = Path.home() / ".config/yozekos/capture.json"
+DEFAULT = {"shotDir": "~/Pictures/Screenshots", "shotFormat": "png", "shotQuality": 90,
+           "shotCopy": True, "shotPreview": True, "shotSound": False, "shotDelay": 0,
+           "skin": "window", "recordDir": "~/Videos/Recordings", "recordFps": 60}
+CHOICES = {"shotFormat": ("png", "jpg", "webp"), "skin": ("ropes", "window", "stream")}
+BOOLEANS = ("shotCopy", "shotPreview", "shotSound")
+RANGES = {"shotQuality": (1, 100), "shotDelay": (0, 30), "recordFps": (15, 120)}
+FOLDERS = ("shotDir", "recordDir")
+
+
+def load():
+    data = dict(DEFAULT)
+    try:
+        source = json.loads(PATH.read_text())
+        for key in DEFAULT:
+            if key in source:
+                data[key] = source[key]
+    except (OSError, ValueError, TypeError):
+        pass
+    return data
+
+
+def save(data):
+    PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp = PATH.with_suffix(".tmp")
+    temp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(temp, PATH)
+
+
+def main(argv):
+    data = load()
+    if len(argv) == 2 and argv[1] == "init":
+        if not PATH.exists():
+            save(data)
+        print(json.dumps(data))
+        return
+    if len(argv) == 1 or argv[1] == "state":
+        print(json.dumps(data))
+        return
+    if len(argv) != 4 or argv[1] != "set":
+        raise SystemExit("usage: yozekos-capture-settings state | set KEY VALUE")
+    _, _, key, raw = argv
+    if key in CHOICES:
+        if raw not in CHOICES[key]:
+            raise SystemExit(key + ": choose " + ", ".join(CHOICES[key]))
+        value = raw
+    elif key in BOOLEANS:
+        if raw.lower() not in ("on", "off", "true", "false", "1", "0"):
+            raise SystemExit(key + ": expected on or off")
+        value = raw.lower() in ("on", "true", "1")
+    elif key in RANGES:
+        value = int(raw)
+        lo, hi = RANGES[key]
+        if not lo <= value <= hi:
+            raise SystemExit(f"{key}: expected {lo}..{hi}")
+    elif key in FOLDERS:
+        value = raw
+        if not value or "\0" in value:
+            raise SystemExit(key + ": empty or invalid path")
+        Path(value).expanduser().mkdir(parents=True, exist_ok=True)
+    else:
+        raise SystemExit("unknown setting: " + key)
+    if key == "recordFps":
+        recorder = Path(__file__).with_name("rice-hotcorner")
+        subprocess.run([sys.executable, str(recorder), "set", "rec_fps", str(value)], check=True)
+    data[key] = value
+    save(data)
+    print(json.dumps(data))
+
+
+if __name__ == "__main__":
+    main(sys.argv)

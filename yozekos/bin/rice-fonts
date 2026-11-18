@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# YozekOS's pixel fonts ship with the NixOS module and user installer.
+set -euo pipefail
+case "${1:-status}" in
+  status|check)
+    for family in 'Pixeloid Sans' CozetteVector 'Pixeloid Mono'; do
+      match="$(fc-match -f '%{family}' "$family")"
+      if [[ "$match" == "$family" ]]; then printf '%s: installed\n' "$family"; else printf '%s: missing\n' "$family"; exit 1; fi
+    done
+    ;;
+  *) printf 'Usage: rice-fonts [status|check]\n' >&2; exit 2 ;;
+esac

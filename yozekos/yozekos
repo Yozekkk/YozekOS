@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+bin="$HOME/.local/bin"
+case "${1:-start}" in
+    start) systemctl --user start yozekos-shell.service ;;
+    stop) systemctl --user stop yozekos-shell.service ;;
+    restart|reload) systemctl --user restart yozekos-shell.service ;;
+    status) systemctl --user --no-pager status yozekos-shell.service ;;
+    settings) exec "$bin/rice-settings" ;;
+    launcher) exec "$bin/rice-launch" ;;
+    notifications) exec "$bin/rice-cc" toggle ;;
+    wallpaper) exec "$bin/rice-wallpaper" ;;
+    theme) shift; exec "$bin/rice-theme" "${@:-state}" ;;
+    lock) exec swaylock -f ;;
+    version) printf 'YozekOS development (%s)\n' "$(git -C "$(dirname "$root")" rev-parse --short HEAD 2>/dev/null || echo local)" ;;
+    doctor)
+        printf 'YozekOS shell: '; systemctl --user is-active yozekos-shell.service || true
+        printf 'Session: %s\n' "${XDG_CURRENT_DESKTOP:-unknown}"
+        printf 'Main shell instances: '
+        python3 - <<'PY'
+from pathlib import Path
+count = 0
+for entry in Path('/proc').iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        args = (entry / 'cmdline').read_bytes().split(b'\0')
+        if args and args[0].split(b'/')[-1] in (b'quickshell', b'.quickshell-wrapped') and b'rice-desktop' in b' '.join(args[1:]):
+            count += 1
+    except (OSError, PermissionError):
+        pass
+print(count)
+PY
+        for family in 'Pixeloid Sans' CozetteVector 'Pixeloid Mono'; do
+            printf '%s: ' "$family"; fc-match -f '%{family}\n' "$family" | head -1
+        done
+        niri validate 2>&1 | tail -1
+        ;;
+    *) printf 'Usage: yozekos [start|stop|restart|reload|status|settings|launcher|notifications|wallpaper|theme|lock|version|doctor]\n' >&2; exit 2 ;;
+esac
