@@ -5,7 +5,8 @@ YozekOS включает адаптированные материалы дру�
 | Источник | Использование | Условия |
 | --- | --- | --- |
 | [DarkShadowShell](https://github.com/shadowww-dev/DarkShadowShell) | Архитектура и значительная часть панели, меню, настроек, сервисов, виджетов и скриптов | См. `yozekos/LICENSE-DarkShadowShell` |
-| [angelOS](https://github.com/MixaDoDs/AngelOS-Dotfiles) | Пиксельные элементы, выбор области экрана, тема SDDM и оформление | См. `yozekos/LICENSE.ANGELOS`, `docs/LICENSE-AngelOS.txt` и [подробную ведомость](docs/ANGELOS-THIRD-PARTY.md) |
+| [AngelOS-Dotfiles](https://github.com/MixaDoDs/AngelOS-Dotfiles) | Пиксельные элементы, выбор области экрана, тема SDDM и оформление | См. `yozekos/LICENSE.ANGELOS`, `docs/LICENSE-AngelOS.txt` и [подробную ведомость](docs/ANGELOS-THIRD-PARTY.md) |
+| [Оформление README AngelOS](https://github.com/MixaDoDs/AngelOS-Dotfiles/tree/main/docs/readme/footage) | Адаптированные SVG кассет, заголовка, паутины, разделителей и финального экрана в `docs/readme/footage/`; композиция README | Автор MixaDoDs, MIT; текст лицензии — [`docs/LICENSE-AngelOS.txt`](docs/LICENSE-AngelOS.txt). Надписи и содержание адаптированы для YozekOS. `docs/readme/install-note.svg` нарисован для YozekOS по композиции исходной записки. |
 | [Pixel cursors](https://github.com/mikaeladev/pixel-cursors) | Исходная геометрия курсоров | GPL-3.0; см. `yozekos/LICENSE.PIXEL-CURSORS` |
 | Шрифты Pixeloid | Файлы в `fonts/pixel` | OFL-1.1; см. `fonts/OFL-1.1.txt` |
 | Шрифты Cozette и CozetteVector | Файлы в `fonts/pixel` | MIT; текст в [ведомости AngelOS](docs/ANGELOS-THIRD-PARTY.md#cozette--mit) |

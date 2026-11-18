@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1144 430" role="img" aria-label="Листок из дела: git clone YozekOS, cd YozekOS, предварительная проверка и установка">
+  <defs>
+    <pattern id="paper" width="1144" height="36" patternUnits="userSpaceOnUse"><rect width="1144" height="36" fill="#f6f0de"/><path d="M0 35.5H1144" stroke="#a8c7d5" stroke-width="1"/></pattern>
+    <filter id="grain"><feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="31" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope="0.06"/></feComponentTransfer></filter>
+  </defs>
+  <path d="M16 29 28 19 41 24 55 35 72 22 89 31 109 27 127 36 148 29 167 31 188 24 207 33 232 31 251 36 273 27 297 33 316 28 337 34 362 29 387 32 410 24 434 33 455 30 482 34 509 25 531 30 556 26 582 33 608 24 632 30 657 32 681 26 704 31 733 24 759 35 781 27 807 31 829 25 854 32 881 27 905 30 930 24 955 32 981 29 1002 33 1028 23 1051 31 1073 24 1093 32 1126 26 1138 31V400L1117 406 1099 398 1080 410 1057 399 1035 408 1010 402 988 412 965 402 943 408 921 400 897 412 872 402 849 407 824 399 801 411 776 405 751 410 729 400 704 409 678 402 653 412 627 401 601 408 576 398 552 411 525 400 501 409 478 400 455 412 429 401 405 409 381 401 358 413 334 403 308 410 287 398 262 409 238 402 214 412 190 399 168 408 145 400 122 411 99 401 77 408 55 400 35 410 16 401Z" fill="url(#paper)" stroke="#ddd4bb" stroke-width="2"/>
+  <path d="M89 30V401" stroke="#ed7ba9" stroke-width="2" opacity=".72"/>
+  <path d="M60 4h148v37H60z" fill="#ff86bf" opacity=".82"/><path d="M60 5h148v14H60z" fill="#f9a7ce" opacity=".85"/>
+  <path d="M1071 73l10-10 10 10 10-10 10 10-20 21z" fill="#fb6cae"/>
+  <g font-family="'Courier New',monospace" font-weight="bold" fill="#352b48">
+    <text x="113" y="81" font-size="22" fill="#b52c77">ТОМУ, КТО ЭТО НАЙДЁТ:</text>
+    <text x="113" y="124" font-size="25">git clone https://github.com/Yozekkk/YozekOS.git</text>
+    <text x="113" y="160" font-size="25">cd YozekOS</text>
+    <text x="113" y="196" font-size="25">./install.sh --dry-run</text>
+    <text x="113" y="232" font-size="25">./install.sh</text>
+    <text x="113" y="273" font-size="21">NixOS · Niri · Quickshell. Сначала прочти план.</text>
+    <text x="113" y="309" font-size="21">Чужие файлы сохраняются в резервной копии.</text>
+    <text x="113" y="345" font-size="21" fill="#f062aa">~ пакеты подключаются через модуль NixOS ~</text>
+    <text x="832" y="380" font-size="19" fill="#b52c77">ПОВТОРНО = БЕЗОПАСНО</text>
+  </g>
+  <path d="M16 29H1138V401H16z" fill="#fff" filter="url(#grain)" opacity=".55"/>
+</svg>
