@@ -1,0 +1,15 @@
+[config]
+
+[templates.waybar]
+input_path = '~/.config/matugen/templates/waybar.css'
+output_path = '~/.config/waybar/colors.css'
+
+[templates.kitty]
+input_path = '~/.config/matugen/templates/kitty.conf'
+output_path = '~/.config/kitty/current-theme.conf'
+post_hook = 'pkill -SIGUSR1 kitty || true'
+
+[templates.palette]
+input_path = '~/.config/matugen/templates/palette.json'
+output_path = '~/.config/yozekos/palette.json'
+post_hook = 'setsid -f $HOME/.local/bin/rice-look files-theme >/dev/null 2>&1; true'

@@ -1,0 +1,940 @@
+#!/usr/bin/env python3
+"""Region screenshot with gravity ropes; always saves under Pictures/Screenshots."""
+from __future__ import annotations
+
+import fcntl
+import math
+import os
+import signal
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+
+GEOMETRY_ONLY = "--geometry" in sys.argv
+
+
+def single_instance():
+    """One selection at a time (screenshot or record region): a held Mod+Shift+S
+    or another call while one is open exits right away. The lock dies with us."""
+    path = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "yozekos-screenshot-region.lock")
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+
+
+# before GTK loads: repeats must cost nothing
+_LOCK = single_instance()
+if _LOCK is None:
+    # --geometry callers (niri-record-region) read a non-zero exit as "cancelled"
+    sys.exit(1 if GEOMETRY_ONLY else 0)
+
+import cairo
+import gi
+
+gi.require_version("Gdk", "3.0")
+gi.require_version("Gtk", "3.0")
+gi.require_version("GtkLayerShell", "0.1")
+from gi.repository import Gdk, GLib, Gtk, GtkLayerShell  # noqa: E402
+
+def load_capture_settings():
+    """angelOS Settings → System → Screenshots and recording (settings.json "capture")."""
+    import json
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    try:
+        with open(os.path.join(base, "yozekos/capture.json")) as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+CAPTURE = load_capture_settings()
+OUTDIR = os.path.expanduser(CAPTURE.get("shotDir") or "~/Pictures/Screenshots")
+SHOT_FORMAT = str(CAPTURE.get("shotFormat") or "png").lower()
+if SHOT_FORMAT not in ("png", "jpg", "jpeg", "webp"):
+    SHOT_FORMAT = "png"
+SHOT_JPG = SHOT_FORMAT in ("jpg", "jpeg")
+SHOT_QUALITY = max(1, min(100, int(CAPTURE.get("shotQuality") or 90)))
+DIM = 0.35
+SEGMENTS_BORDER = 10
+SEGMENTS_TETHER = 12
+# Border around rect: slight hang. Tethers from monitor edges: visible catenary.
+GRAVITY_BORDER = 28.0
+GRAVITY_TETHER = 720.0
+DAMPING = 0.988
+SLACK_BORDER = 1.0  # rigid length; tiny motion from residual gravity
+GRAVITY_SIDE = 8.0   # left/right perimeter — almost cable-taut
+SLACK_SIDE = 1.0
+SLACK_TETHER = 1.06  # tighter corner tethers
+PHYSICS_SUBSTEPS = 2  # integrate in smaller steps so fast drags don't overshoot/jitter
+MIN_SIZE = 4
+
+
+def load_skin():
+    """angelOS skin (Settings → Screenshots): None keeps the ropes."""
+    try:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        sys.path.insert(0, os.path.dirname(__file__))
+        import capture_skins
+        name = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--skin=")), None)
+        return capture_skins.load(name)
+    except Exception:
+        return None
+
+
+SKIN = load_skin()
+
+# A click without a drag takes the window under the pointer (like ShareX): it lights up as the
+# pointer moves over it; over the desktop or a bar, the click takes the whole screen.
+CLICK_SLOP = 4  # px the pointer may wander between press and release and still be a click
+
+
+def niri_request(name):
+    """One request on niri's socket ("Windows", "Workspaces", "Outputs"): its reply or None."""
+    import json
+    import socket
+    path = os.environ.get("NIRI_SOCKET")
+    if not path:
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect(path)
+            s.sendall((json.dumps(name) + "\n").encode())
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        ok = json.loads(buf).get("Ok")
+        return ok.get(name) if isinstance(ok, dict) else None
+    except Exception:
+        return None
+
+
+def niri_layout():
+    """gaps, center-focused-column and struts from niri's config (angelOS: cfg/layout.kdl)."""
+    import re
+    base = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "niri")
+    text = ""
+    for name in ("cfg/layout.kdl", "config.kdl"):
+        try:
+            with open(os.path.join(base, name)) as f:
+                text += re.sub(r"//[^\n]*", "", f.read()) + "\n"
+        except OSError:
+            pass
+
+    def num(pattern, body, default=0.0):
+        m = re.search(pattern, body, re.M)
+        return float(m.group(1)) if m else default
+
+    m = re.search(r"^\s*center-focused-column\s+\"?([\w-]+)", text, re.M)
+    s = re.search(r"^\s*struts\s*\{([^}]*)\}", text, re.M)
+    body = s.group(1) if s else ""
+    struts = {e: num(r"\b" + e + r"\s+(-?[\d.]+)", body) for e in ("left", "right", "top", "bottom")}
+    return num(r"^\s*gaps\s+([\d.]+)", text, 16.0), m.group(1) if m else "never", struts
+
+
+def read_zones():
+    """The edges angelOS's bars keep from windows, per output (services/Zones in the shell)."""
+    import json
+    try:
+        with open(os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "yozekos", "zones.json")) as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def split_zone(total, a, b):
+    """How much of `total` (what the bars keep across one axis, measured) is on the a side
+    (top or left), given what the shell says each side keeps."""
+    if a + b == total or total <= 0:
+        return max(0, min(a, total))
+    if not b:
+        return total
+    if not a:
+        return 0
+    return round(total * a / (a + b))
+
+
+def window_rects(parents):
+    """The windows on the screens, topmost first: [(x, y, w, h, app_id)] in global logical
+    coordinates (grim's), each cut to its output. `parents` = output name -> (w, h) of the
+    area the bars leave (niri's parent area, measured by a layer-shell probe).
+
+    niri tells where floating windows are, not tiled ones; these are laid out the way niri
+    does it: the active column centred in the working area (center-focused-column "always"),
+    the others beside it with the gaps, tiles from the top. Otherwise no tiled windows."""
+    windows = niri_request("Windows") or []
+    workspaces = niri_request("Workspaces") or []
+    outputs = niri_request("Outputs") or {}
+    gaps, center, struts = niri_layout()
+    zones = read_zones()
+    found = []
+    for ws in workspaces:
+        out = outputs.get(ws.get("output") or "") or {}
+        lg = out.get("logical")
+        if not ws.get("is_active") or not lg:
+            continue
+        name = ws["output"]
+        ox, oy, ow, oh = lg["x"], lg["y"], lg["width"], lg["height"]
+        pw, ph = parents.get(name) or (ow, oh)
+        z = zones.get(name) or {}
+        px = split_zone(ow - pw, z.get("left", 0), z.get("right", 0))
+        py = split_zone(oh - ph, z.get("top", 0), z.get("bottom", 0))
+        wx, wy = px + struts["left"], py + struts["top"]
+        ww, wh = pw - struts["left"] - struts["right"], ph - struts["top"] - struts["bottom"]
+        mine = [w for w in windows if w.get("workspace_id") == ws["id"] and (w.get("layout") or {}).get("window_size")]
+        placed = []  # (z order key, x, y, w, h, app_id) in output coordinates
+
+        def add(w, tx, ty, key):
+            lay = w["layout"]
+            dx, dy = lay.get("window_offset_in_tile") or (0, 0)
+            placed.append((key, tx + dx, ty + dy, lay["window_size"][0], lay["window_size"][1], w.get("app_id") or ""))
+
+        # floating ones over the tiled, the last focused on top (niri raises a window on focus)
+        for w in mine:
+            pos = w["layout"].get("tile_pos_in_workspace_view")
+            if w.get("is_floating") and pos:
+                add(w, pos[0], pos[1], (1, w.get("focus_timestamp") or {}))
+
+        tiled = [w for w in mine if not w.get("is_floating") and w["layout"].get("pos_in_scrolling_layout") and w["layout"].get("tile_size")]
+        if tiled and center == "always":
+            cols = {}
+            for w in tiled:
+                cols.setdefault(w["layout"]["pos_in_scrolling_layout"][0], []).append(w)
+            width = {c: max(w["layout"]["tile_size"][0] for w in ts) for c, ts in cols.items()}
+            colx, x = {}, 0.0
+            for c in sorted(cols):
+                colx[c] = x
+                x += width[c] + gaps
+            by_id = {w["id"]: w for w in tiled}
+            act = by_id.get(ws.get("active_window_id")) or max(tiled, key=lambda w: ts_key(w.get("focus_timestamp")))
+            ac = act["layout"]["pos_in_scrolling_layout"][0]
+
+            def mode(ts):
+                tw, th = max(t["layout"]["tile_size"][0] for t in ts), max(t["layout"]["tile_size"][1] for t in ts)
+                if tw >= ow - 0.5 and th >= oh - 0.5:
+                    return "fullscreen"
+                if tw >= pw - 0.5 and th >= ph - 0.5:
+                    return "maximized"
+                return "normal"
+
+            am, aw = mode(cols[ac]), width[ac]
+            if am == "fullscreen":
+                xa = 0.0
+            elif am == "maximized":
+                xa = px
+            elif aw >= ww:
+                xa = wx  # wider than the view: niri puts it at the left
+            else:
+                xa = wx + (ww - aw) / 2
+            for c, ts in cols.items():
+                cx = xa + colx[c] - colx[ac]
+                m = mode(ts)
+                y = 0.0 if m == "fullscreen" else py if m == "maximized" else wy + gaps
+                for w in sorted(ts, key=lambda w: w["layout"]["pos_in_scrolling_layout"][1]):
+                    tw, th = w["layout"]["tile_size"]
+                    add(w, cx + (width[c] - tw) / 2, y, (0, w.get("focus_timestamp") or {}))
+                    y += th + gaps
+
+        placed.sort(key=lambda p: (p[0][0], ts_key(p[0][1])), reverse=True)
+        for _key, x, y, w, h, app in placed:
+            # only what is on this output
+            x0, y0 = max(round(x), 0), max(round(y), 0)
+            x1, y1 = min(round(x + w), ow), min(round(y + h), oh)
+            if x1 - x0 >= MIN_SIZE and y1 - y0 >= MIN_SIZE:
+                found.append((ox + x0, oy + y0, x1 - x0, y1 - y0, app))
+    return found
+
+
+def ts_key(ts):
+    """niri's focus_timestamp ({secs, nanos} or None) as a number to sort by."""
+    if not isinstance(ts, dict):
+        return 0
+    return ts.get("secs", 0) * 1_000_000_000 + ts.get("nanos", 0)
+
+
+def shot_dir(sel, rects):
+    """<shots>/<2026-10 Октябрь> by angelOS's screenshot-sort.py (by month), else <shots>."""
+    sorter = os.path.expanduser("~/.config/quickshell/rice-desktop/scripts/screenshot-sort.py")
+    try:
+        out = subprocess.run(["python3", sorter, "dir"],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+        if out and os.path.isdir(out):
+            return out
+    except Exception:
+        pass
+    os.makedirs(OUTDIR, exist_ok=True)
+    return OUTDIR
+
+
+@dataclass
+class Particle:
+    x: float
+    y: float
+    px: float
+    py: float
+    pinned: bool = False
+
+
+@dataclass
+class Rope:
+    pts: list = field(default_factory=list)
+    rest: float = 1.0
+    gravity: float = GRAVITY_BORDER
+    kind: str = "border"  # border | tether
+
+
+def make_rope(x0, y0, x1, y1, n=SEGMENTS_BORDER, gravity=GRAVITY_BORDER, slack=SLACK_BORDER, kind="border") -> Rope:
+    pts = []
+    for i in range(n):
+        t = i / (n - 1)
+        x = x0 + (x1 - x0) * t
+        y = y0 + (y1 - y0) * t
+        pts.append(Particle(x, y, x, y, pinned=(i == 0 or i == n - 1)))
+    length = math.hypot(x1 - x0, y1 - y0)
+    rest = max(length / (n - 1), 1.0) * slack
+    return Rope(pts=pts, rest=rest, gravity=gravity, kind=kind)
+
+
+def update_rope_ends(rope: Rope, x0, y0, x1, y1, slack: float):
+    n = len(rope.pts)
+    length = math.hypot(x1 - x0, y1 - y0)
+    rope.rest = max(length / max(n - 1, 1), 1.0) * slack
+    rope.pts[0].x = rope.pts[0].px = x0
+    rope.pts[0].y = rope.pts[0].py = y0
+    rope.pts[-1].x = rope.pts[-1].px = x1
+    rope.pts[-1].y = rope.pts[-1].py = y1
+    rope.pts[0].pinned = rope.pts[-1].pinned = True
+
+
+def step_rope(rope: Rope, dt: float):
+    g = rope.gravity * dt * dt
+    damp = 0.92 if rope.kind == "border" else DAMPING
+    for p in rope.pts:
+        if p.pinned:
+            continue
+        vx = (p.x - p.px) * damp
+        vy = (p.y - p.py) * damp
+        p.px, p.py = p.x, p.y
+        p.x += vx
+        p.y += vy + g
+    if rope.kind == "border":
+        iters = 10 if rope.gravity <= 10 else 6
+    else:
+        iters = 8  # more segments than before need more passes to hold rest length
+    for _ in range(iters):
+        for i in range(len(rope.pts) - 1):
+            a = rope.pts[i]
+            b = rope.pts[i + 1]
+            dx = b.x - a.x
+            dy = b.y - a.y
+            dist = math.hypot(dx, dy) or 0.0001
+            diff = (dist - rope.rest) / dist
+            if a.pinned and b.pinned:
+                continue
+            if a.pinned:
+                b.x -= dx * diff
+                b.y -= dy * diff
+            elif b.pinned:
+                a.x += dx * diff
+                a.y += dy * diff
+            else:
+                ox, oy = dx * 0.5 * diff, dy * 0.5 * diff
+                a.x += ox
+                a.y += oy
+                b.x -= ox
+                b.y -= oy
+
+
+class ScreenOverlay(Gtk.Window):
+    """One output-sized interactive layer."""
+
+    def __init__(self, app: "ScreenshotApp", monitor: Gdk.Monitor, geo):
+        super().__init__()
+        self.app = app
+        self.monitor = monitor
+        self.geo = geo  # Gdk.Rectangle
+        self.win_w = geo.width
+        self.win_h = geo.height
+
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_size_request(self.win_w, self.win_h)
+
+        visual = self.get_screen().get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "niri-screenshot-ropes")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        # EXCLUSIVE only on primary overlay (set by app); default none here
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_monitor(self, monitor)
+        for edge in (
+            GtkLayerShell.Edge.LEFT,
+            GtkLayerShell.Edge.TOP,
+            GtkLayerShell.Edge.RIGHT,
+            GtkLayerShell.Edge.BOTTOM,
+        ):
+            GtkLayerShell.set_anchor(self, edge, True)
+            GtkLayerShell.set_margin(self, edge, 0)
+
+        self.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.POINTER_MOTION_MASK
+            | Gdk.EventMask.ENTER_NOTIFY_MASK
+            | Gdk.EventMask.KEY_PRESS_MASK
+        )
+        self.connect("draw", self.on_draw)
+        self.connect("button-press-event", self.on_press)
+        self.connect("button-release-event", self.on_release)
+        self.connect("motion-notify-event", self.on_motion)
+        self.connect("enter-notify-event", self.on_motion)
+        self.connect("key-press-event", self.on_key)
+        self.set_can_focus(True)
+        self.show_all()
+        self.grab_focus()
+
+    def to_global(self, lx: float, ly: float):
+        return self.geo.x + lx, self.geo.y + ly
+
+    def on_press(self, _w, event):
+        if event.button != 1:
+            return False
+        gx, gy = self.to_global(event.x, event.y)
+        self.app.press(gx, gy)
+        return True
+
+    def on_motion(self, _w, event):
+        gx, gy = self.to_global(event.x, event.y)
+        if self.app.dragging:
+            self.app.update_drag(gx, gy)
+        elif self.app.pressed is not None:
+            # a click until the pointer wanders off: then a region from where it was pressed
+            px, py = self.app.pressed
+            if abs(gx - px) > CLICK_SLOP or abs(gy - py) > CLICK_SLOP:
+                self.app.begin_drag(px, py)
+                self.app.update_drag(gx, gy)
+        else:
+            self.app.hover_at(gx, gy)
+        return True
+
+    def on_release(self, _w, event):
+        if event.button != 1:
+            return False
+        gx, gy = self.to_global(event.x, event.y)
+        if self.app.dragging:
+            self.app.end_drag(gx, gy)
+        elif self.app.pressed is not None:
+            self.app.click(gx, gy)
+        return True
+
+    def on_key(self, _w, event):
+        key = Gdk.keyval_name(event.keyval)
+        if key in ("Escape", "Esc"):
+            self.app.cancel()
+            return True
+        return False
+
+    def on_draw(self, _w, cr):
+        # clear
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.paint()
+
+        if SKIN is not None:
+            cr.set_operator(cairo.OPERATOR_OVER)
+            cr.set_antialias(cairo.ANTIALIAS_NONE)
+            sel = self.app.selection_global()
+            local = None if sel is None else (sel[0] - self.geo.x, sel[1] - self.geo.y, sel[2], sel[3])
+            SKIN.draw_select(cr, self.win_w, self.win_h, local)
+            return False
+
+        cr.set_operator(cairo.OPERATOR_OVER)
+        # dim whole output
+        cr.set_source_rgba(0, 0, 0, DIM)
+        cr.rectangle(0, 0, self.win_w, self.win_h)
+        cr.fill()
+
+        sel = self.app.selection_global()
+        if sel is not None:
+            x, y, w, h = sel
+            # hole in local coords
+            lx, ly = x - self.geo.x, y - self.geo.y
+            # only clear intersection with this monitor
+            cr.set_operator(cairo.OPERATOR_CLEAR)
+            cr.rectangle(lx, ly, w, h)
+            cr.fill()
+            cr.set_operator(cairo.OPERATOR_OVER)
+
+            # draw ropes in local space
+            for rope in self.app.ropes:
+                self._draw_rope(cr, rope)
+
+            # corner pins (reset antialiasing: ropes leave it disabled for the pixel look)
+            cr.set_antialias(cairo.ANTIALIAS_DEFAULT)
+            cr.set_source_rgba(0.95, 0.85, 0.55, 1.0)
+            for cx, cy in ((x, y), (x + w, y), (x + w, y + h), (x, y + h)):
+                cr.arc(cx - self.geo.x, cy - self.geo.y, 3.2, 0, 2 * math.pi)
+                cr.fill()
+
+        return False
+
+    def _draw_rope(self, cr, rope: Rope):
+        """Fast pixel-rope look for border AND tethers (stroke + sparse braid ticks)."""
+        if len(rope.pts) < 2:
+            return
+        cr.set_antialias(cairo.ANTIALIAS_NONE)
+        ox, oy = self.geo.x, self.geo.y
+        C_OUT = (0.22, 0.12, 0.05, 1.0)
+        C_DARK = (0.42, 0.26, 0.12, 1.0)
+        C_MID = (0.70, 0.50, 0.28, 1.0)
+        C_LIT = (0.90, 0.74, 0.48, 1.0)
+        cell = 3
+        thick = 7 if rope.kind == "border" else 6
+
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        # build the line path once, reuse it for all three stroke widths instead of
+        # rebuilding it 3x (stroke_preserve keeps the path around for the next stroke)
+        cr.move_to(rope.pts[0].x - ox, rope.pts[0].y - oy)
+        for p in rope.pts[1:]:
+            cr.line_to(p.x - ox, p.y - oy)
+        cr.set_line_width(thick + 2 * cell)  # outline
+        cr.set_source_rgba(*C_OUT)
+        cr.stroke_preserve()
+        cr.set_line_width(thick)  # dark core
+        cr.set_source_rgba(*C_DARK)
+        cr.stroke_preserve()
+        cr.set_line_width(thick - 2)  # mid body
+        cr.set_source_rgba(*C_MID)
+        cr.stroke()
+
+        # braid ticks + end knots: batch every pixel by color so each color is a
+        # single fill() call per rope instead of one fill() per pixel
+        batches: dict = {}
+
+        def add(px, py, col):
+            batches.setdefault(col, []).append((round(px / cell) * cell, round(py / cell) * cell))
+
+        step = cell * 2
+        dist_acc = 0.0
+        for i in range(len(rope.pts) - 1):
+            a, b = rope.pts[i], rope.pts[i + 1]
+            dx, dy = b.x - a.x, b.y - a.y
+            seg = math.hypot(dx, dy) or 1.0
+            ux, uy = dx / seg, dy / seg
+            nx, ny = -uy, ux
+            t = 0.0
+            while t < seg:
+                phase = int((dist_acc + t) / step)
+                twist = 1 if (phase % 2) == 0 else -1
+                col = C_LIT if (phase % 3) == 0 else C_MID
+                add(a.x + ux * t - ox + nx * twist * 1.5, a.y + uy * t - oy + ny * twist * 1.5, col)
+                add(a.x + ux * t - ox - nx * twist * 1.5, a.y + uy * t - oy - ny * twist * 1.5, C_DARK)
+                t += step
+            dist_acc += seg
+
+        for p in (rope.pts[0], rope.pts[-1]):
+            kx, ky = p.x - ox, p.y - oy
+            for dx, dy, col in (
+                (0, 0, C_OUT),
+                (-cell, 0, C_DARK),
+                (cell, 0, C_MID),
+                (0, -cell, C_DARK),
+                (0, cell, C_LIT),
+            ):
+                add(kx + dx, ky + dy, col)
+
+        for col, pts in batches.items():
+            cr.set_source_rgba(*col)
+            for px, py in pts:
+                cr.rectangle(px, py, cell, cell)
+            cr.fill()
+
+
+class WorkProbe(Gtk.Window):
+    """An invisible layer surface over the whole of one output less the bars' exclusive
+    zones: the size niri gives it is that area (Wayland doesn't say where it is; the shell's
+    zones.json says which edges the bars took)."""
+
+    def __init__(self, monitor: Gdk.Monitor, on_size):
+        super().__init__()
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_size_request(1, 1)
+        visual = self.get_screen().get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "niri-screenshot-probe")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.BACKGROUND)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        GtkLayerShell.set_exclusive_zone(self, 0)
+        GtkLayerShell.set_monitor(self, monitor)
+        for edge in (GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.RIGHT, GtkLayerShell.Edge.BOTTOM):
+            GtkLayerShell.set_anchor(self, edge, True)
+        self.connect("draw", self._clear)
+        self.connect("size-allocate", lambda _w, a: a.width > 1 and a.height > 1 and on_size(a.width, a.height))
+        self.show_all()
+        self.input_shape_combine_region(cairo.Region())
+
+    @staticmethod
+    def _clear(_w, cr):
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.paint()
+        return True
+
+
+class ScreenshotApp:
+    def __init__(self):
+        self.dragging = False
+        self.pressed = None  # where button 1 went down, until it is a drag or a click
+        self.hover = None  # the window (or screen) under the pointer: what a click takes
+        self.pointer = None
+        self.rects = []  # window_rects(), once the probes have measured the screens
+        self._parents = {}
+        self._probes = []
+        self.x0 = self.y0 = 0.0
+        self.x1 = self.y1 = 0.0
+        self.ropes: list[Rope] = []
+        self.windows: list[ScreenOverlay] = []
+        self._last = time.monotonic()
+        self._done = False
+
+        display = Gdk.Display.get_default()
+        n = display.get_n_monitors()
+        for i in range(n):
+            mon = display.get_monitor(i)
+            geo = mon.get_geometry()
+            win = ScreenOverlay(self, mon, geo)
+            self.windows.append(win)
+        # Escape handling on the first overlay
+        if self.windows:
+            GtkLayerShell.set_keyboard_mode(
+                self.windows[0], GtkLayerShell.KeyboardMode.EXCLUSIVE
+            )
+            self.windows[0].grab_focus()
+
+        # draw at the real monitor refresh rate instead of a fixed 200fps —
+        # avoids wasted cairo/compositor work on 60/120/144Hz screens
+        rates = [w.monitor.get_refresh_rate() for w in self.windows]
+        rates = [r for r in rates if r and r > 0]
+        hz = max(rates) / 1000.0 if rates else 165.0
+        self._redraw_interval = 1.0 / min(max(hz, 30.0), 240.0)
+
+        GLib.timeout_add(5, self._tick)  # ~200Hz physics tick; drawing is throttled separately
+
+        # the windows under the pointer: measure the screens' working areas, then lay them out
+        for win in self.windows:
+            g = win.geo
+            self._probes.append(WorkProbe(win.monitor, lambda w, h, g=g: self._measured(g, w, h)))
+        GLib.timeout_add(400, self._find_windows)
+
+    def _measured(self, g, w, h):
+        self._parents[(g.x, g.y)] = (w, h)
+        if len(self._parents) >= len(self.windows):
+            GLib.idle_add(self._find_windows)
+
+    def _find_windows(self):
+        if not self._probes or self._done:
+            return False
+        for probe in self._probes:
+            probe.destroy()
+        self._probes = []
+        outputs = niri_request("Outputs") or {}
+        parents = {}
+        for name, out in outputs.items():
+            lg = out.get("logical") or {}
+            size = self._parents.get((lg.get("x"), lg.get("y")))
+            if size:
+                parents[name] = size
+        try:
+            self.rects = window_rects(parents)
+        except Exception as e:
+            print("niri-screenshot-region: no windows:", e, file=sys.stderr)
+            self.rects = []
+        if self.pointer is not None and self.pressed is None and not self.dragging:
+            self.hover = None
+            self.hover_at(*self.pointer)
+        return False
+
+    def target_at(self, gx, gy):
+        """What a click at (gx, gy) takes: the topmost window there, else the whole screen."""
+        for x, y, w, h, _app in self.rects:
+            if x <= gx < x + w and y <= gy < y + h:
+                return x, y, w, h
+        for win in self.windows:
+            g = win.geo
+            if g.x <= gx < g.x + g.width and g.y <= gy < g.y + g.height:
+                return g.x, g.y, g.width, g.height
+        return None
+
+    def hover_at(self, gx, gy):
+        self.pointer = (gx, gy)
+        rect = self.target_at(gx, gy)
+        if rect != self.hover:
+            self.hover = rect
+            self._sync_ropes()
+            self.redraw(all_monitors=True)
+
+    def press(self, gx, gy):
+        self.pressed = (gx, gy)
+
+    def click(self, gx, gy):
+        self.pressed = None
+        sel = self.target_at(gx, gy)
+        if sel is None:
+            self.cancel()
+            return
+        self.finish(sel)
+
+    def selection_global(self):
+        if not self.dragging and self.hover is not None:
+            return self.hover
+        if not self.dragging and abs(self.x1 - self.x0) < 1 and abs(self.y1 - self.y0) < 1:
+            # idle before first drag — no selection
+            if self.x0 == 0 and self.x1 == 0 and self.y0 == 0 and self.y1 == 0:
+                return None
+        x = min(self.x0, self.x1)
+        y = min(self.y0, self.y1)
+        w = abs(self.x1 - self.x0)
+        h = abs(self.y1 - self.y0)
+        if w < 1 or h < 1:
+            return None
+        return int(x), int(y), int(w), int(h)
+
+    def _monitor_for_sel(self, sel):
+        cx = sel[0] + sel[2] / 2
+        cy = sel[1] + sel[3] / 2
+        for win in self.windows:
+            g = win.geo
+            if g.x <= cx < g.x + g.width and g.y <= cy < g.y + g.height:
+                return g
+        return self.windows[0].geo if self.windows else None
+
+    def _rope_specs(self, sel):
+        """Tethers ONLY to rect corners; border ropes almost taut with light motion."""
+        x, y, w, h = sel
+        g = self._monitor_for_sel(sel)
+        if g is None:
+            return []
+        mx, my, mw, mh = g.x, g.y, g.width, g.height
+        specs = []
+
+        # One tether per corner: monitor corner → selection corner
+        specs.append(("tether", mx, my, x, y, SEGMENTS_TETHER, GRAVITY_TETHER, SLACK_TETHER))  # TL
+        specs.append(("tether", mx + mw, my, x + w, y, SEGMENTS_TETHER, GRAVITY_TETHER, SLACK_TETHER))  # TR
+        specs.append(("tether", mx + mw, my + mh, x + w, y + h, SEGMENTS_TETHER, GRAVITY_TETHER, SLACK_TETHER))  # BR
+        specs.append(("tether", mx, my + mh, x, y + h, SEGMENTS_TETHER, GRAVITY_TETHER, SLACK_TETHER))  # BL
+
+        # Perimeter: top/bottom normal stiff; left/right extra-taut ("сбоку посильнее")
+        specs.append(("border", x, y, x + w, y, SEGMENTS_BORDER, GRAVITY_BORDER, SLACK_BORDER))  # top
+        specs.append(("border", x + w, y + h, x, y + h, SEGMENTS_BORDER, GRAVITY_BORDER, SLACK_BORDER))  # bottom
+        specs.append(("border", x + w, y, x + w, y + h, SEGMENTS_BORDER, GRAVITY_SIDE, SLACK_SIDE))  # right
+        specs.append(("border", x, y + h, x, y, SEGMENTS_BORDER, GRAVITY_SIDE, SLACK_SIDE))  # left
+        return specs
+
+    def _sync_ropes(self):
+        sel = self.selection_global()
+        if sel is None:
+            self.ropes = []
+            return
+        specs = self._rope_specs(sel)
+        if len(self.ropes) != len(specs):
+            self.ropes = [
+                make_rope(x0, y0, x1, y1, n=n, gravity=grav, slack=slack, kind=kind)
+                for kind, x0, y0, x1, y1, n, grav, slack in specs
+            ]
+        else:
+            for rope, (kind, x0, y0, x1, y1, _n, grav, slack) in zip(self.ropes, specs):
+                rope.kind = kind
+                rope.gravity = grav
+                update_rope_ends(rope, x0, y0, x1, y1, slack)
+
+    def begin_drag(self, gx, gy):
+        self.dragging = True
+        self.pressed = None
+        self.hover = None
+        self.x0 = self.x1 = gx
+        self.y0 = self.y1 = gy
+        self.ropes = []
+        self._sync_ropes()
+        self.redraw(all_monitors=True)
+
+    def update_drag(self, gx, gy):
+        self.x1, self.y1 = gx, gy
+        self._sync_ropes()
+        self.redraw()
+        self._last_draw = time.monotonic()
+
+    def end_drag(self, gx, gy):
+        self.x1, self.y1 = gx, gy
+        self.dragging = False
+        self._sync_ropes()
+        sel = self.selection_global()
+        if sel is None or sel[2] < MIN_SIZE or sel[3] < MIN_SIZE:
+            self.cancel()
+            return
+        self.finish(sel)
+
+    def finish(self, sel):
+        # hide overlays so they aren't in the shot / recorder
+        for w in self.windows:
+            w.hide()
+        # whatever hangs after this (clipboard, notification daemon), the overlay
+        # must not outlive the shot: the default SIGALRM ends the process
+        signal.alarm(15)
+        if GEOMETRY_ONLY:
+            x, y, w, h = sel
+            print(f"{x},{y} {w}x{h}", flush=True)
+            self._done = True
+            Gtk.main_quit()
+            return
+        # let compositor catch up
+        GLib.timeout_add(60, lambda: self._capture(sel) or False)
+
+    def _capture(self, sel):
+        if self._done:
+            return False
+        self._done = True
+        x, y, w, h = sel
+        outdir = shot_dir(sel, self.rects)
+        stamp = time.strftime("%Y-%m-%d %H-%M-%S")
+        ext = "jpg" if SHOT_JPG else SHOT_FORMAT
+        path = os.path.join(outdir, f"Screenshot from {stamp}." + ext)
+        geom = f"{x},{y} {w}x{h}"
+        try:
+            delay = max(0, min(30, int(CAPTURE.get("shotDelay") or 0)))
+            if delay:
+                time.sleep(delay)
+            grim = ["grim", "-g", geom] + (["-c"] if CAPTURE.get("shotCursor") else []) + (["-t", "jpeg", "-q", str(SHOT_QUALITY)] if SHOT_JPG else [])
+            if SHOT_FORMAT == "webp":
+                raw = path + ".png"
+                try:
+                    subprocess.run(grim + [raw], check=True, timeout=10)
+                    subprocess.run(["magick", raw, "-quality", str(SHOT_QUALITY), path], check=True, timeout=15)
+                finally:
+                    if os.path.exists(raw):
+                        os.remove(raw)
+            else:
+                subprocess.run(grim + [path], check=True, timeout=10)
+            # the overlays go away for good before the slower steps (issue #4)
+            for win in self.windows:
+                win.destroy()
+            while Gtk.events_pending():
+                Gtk.main_iteration_do(False)
+            pling = os.path.join(os.path.dirname(__file__), "screenshot.ogg")
+            # angelOS's Golden Gate plays its shutter from the notification (services/Sounds)
+            shutter = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "yozekos", "shutter")
+            if CAPTURE.get("shotSound") and os.path.isfile(pling) and not os.path.exists(shutter):
+                subprocess.Popen(
+                    ["pw-play", "--volume", "0.75", pling],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            if CAPTURE.get("shotCopy", True):
+                with open(path, "rb") as f:
+                    subprocess.run(
+                        ["wl-copy", "--type", "image/jpeg" if SHOT_JPG else ("image/webp" if SHOT_FORMAT == "webp" else "image/png")],
+                        input=f.read(),
+                        check=False,
+                        timeout=5,
+                    )
+            if CAPTURE.get("shotOpen"):
+                subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            if CAPTURE.get("shotPreview", True):
+                state = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "yozekos")
+                os.makedirs(state, exist_ok=True)
+                import json
+                with open(os.path.join(state, "last-shot.json.tmp"), "w") as last:
+                    json.dump({"path": path, "time": time.time()}, last)
+                os.replace(os.path.join(state, "last-shot.json.tmp"), os.path.join(state, "last-shot.json"))
+            subprocess.run(
+                ["notify-send", "-a", "YozekOS", "Скриншот сохранён", path],
+                check=False,
+                timeout=5,
+            )
+        except Exception as e:
+            subprocess.Popen(["notify-send", "-a", "YozekOS", "Ошибка скриншота", str(e)])
+        Gtk.main_quit()
+        return False
+
+    def cancel(self):
+        if self._done:
+            return
+        self._done = True
+        self._cancelled = True
+        Gtk.main_quit()
+
+    def redraw(self, all_monitors: bool = False):
+        if all_monitors:
+            for w in self.windows:
+                w.queue_draw()
+            return
+        sel = self.selection_global()
+        g = self._monitor_for_sel(sel) if sel else None
+        for w in self.windows:
+            if g is None or (
+                w.geo.x == g.x and w.geo.y == g.y and w.geo.width == g.width and w.geo.height == g.height
+            ):
+                w.queue_draw()
+
+    def _tick(self):
+        if self._done:
+            return False
+        now = time.monotonic()
+        if SKIN is not None:
+            # skins animate on their own clock; no rope physics
+            if now - getattr(self, "_last_draw", 0.0) >= 1.0 / SKIN.fps:
+                self._last_draw = now
+                self.redraw(all_monitors=True)
+            return True
+        dt = min(now - self._last, 0.01)
+        self._last = now
+        if self.ropes:
+            # smaller substeps keep the constraint solver stable when the
+            # selection anchor jumps a lot between ticks (fast mouse drags)
+            sub_dt = dt / PHYSICS_SUBSTEPS
+            for _ in range(PHYSICS_SUBSTEPS):
+                for rope in self.ropes:
+                    step_rope(rope, sub_dt)
+            if not hasattr(self, "_last_draw"):
+                self._last_draw = 0.0
+            if now - self._last_draw >= self._redraw_interval:
+                self._last_draw = now
+                self.redraw()
+        return True
+
+
+def main() -> int:
+    if not GEOMETRY_ONLY:
+        os.makedirs(OUTDIR, exist_ok=True)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    # a parent may have blocked signals we inherit: the alarm must be able to fire
+    if hasattr(signal, "pthread_sigmask"):
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM, signal.SIGTERM, signal.SIGINT})
+    app = ScreenshotApp()
+    app._cancelled = False
+    Gtk.main()
+    code = 1 if GEOMETRY_ONLY and getattr(app, "_cancelled", False) else 0
+    # no lingering after the shot: helper threads or a stuck display connection
+    # must not keep the overlay alive (issue #8)
+    sys.stdout.flush()
+    os._exit(code)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

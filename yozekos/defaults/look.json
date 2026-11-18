@@ -1,0 +1,11 @@
+{
+  "files": "dolphin",
+  "files_colors": true,
+  "shell": "",
+  "terminal": "kitty",
+  "on_open": false,
+  "logo": "distro",
+  "info": "full",
+  "labels": "text",
+  "colors": "wallpaper"
+}

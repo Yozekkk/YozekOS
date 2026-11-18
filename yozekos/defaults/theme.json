@@ -1,0 +1,7 @@
+{
+  "theme": "yozekos-pixel",
+  "apps": {
+    "vscode": false,
+    "discord": false
+  }
+}

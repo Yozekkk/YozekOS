@@ -1,0 +1,14 @@
+format = "$directory$git_branch$git_status$character"
+add_newline = false
+[directory]
+style = "bold #cba6f7"
+truncation_length = 3
+[git_branch]
+format = " [$branch]($style)"
+style = "#bac2de"
+[git_status]
+format = " [$all_status$ahead_behind]($style)"
+style = "#f9e2af"
+[character]
+success_symbol = "[❯](#cba6f7) "
+error_symbol = "[❯](#f38ba8) "

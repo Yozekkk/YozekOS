@@ -1,0 +1,16 @@
+[Unit]
+Description=YozekOS Panel and desktop shell (Niri)
+BindsTo=niri.service
+PartOf=niri.service
+After=niri.service yozekos-wallpaper.service
+Wants=yozekos-wallpaper.service
+ConditionEnvironment=XDG_CURRENT_DESKTOP=niri
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart=@QUICKSHELL@ -n -p @HOME@/.config/quickshell/rice-desktop
+KillMode=control-group
+Restart=on-failure
+RestartSec=3
